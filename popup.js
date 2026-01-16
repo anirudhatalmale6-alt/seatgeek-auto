@@ -3,6 +3,7 @@ chrome.storage.sync.get(['seatgeek_config'], (result) => {
   if (result.seatgeek_config) {
     document.getElementById('maxPrice').value = result.seatgeek_config.maxPrice || 100;
     document.getElementById('quantity').value = result.seatgeek_config.quantity || 6;
+    document.getElementById('sections').value = result.seatgeek_config.sections || '';
   }
 });
 
@@ -10,7 +11,8 @@ chrome.storage.sync.get(['seatgeek_config'], (result) => {
 document.getElementById('saveBtn').addEventListener('click', () => {
   const config = {
     maxPrice: parseInt(document.getElementById('maxPrice').value) || 100,
-    quantity: parseInt(document.getElementById('quantity').value) || 6
+    quantity: parseInt(document.getElementById('quantity').value) || 6,
+    sections: document.getElementById('sections').value.trim()
   };
 
   chrome.storage.sync.set({ seatgeek_config: config }, () => {

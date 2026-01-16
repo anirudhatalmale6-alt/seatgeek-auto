@@ -9,7 +9,8 @@
 
   let config = {
     maxPrice: 999999,
-    quantity: 6
+    quantity: 6,
+    sections: ''
   };
 
   chrome.storage.sync.get(['seatgeek_config'], (result) => {
@@ -351,6 +352,114 @@
     return allTickets;
   }
 
+  // Find section elements on the map by section name/number
+  function findSectionOnMap(sectionName) {
+    console.log('[SeatGeek] Looking for section:', sectionName);
+
+    const sectionUpper = sectionName.toUpperCase().trim();
+    const sectionLower = sectionName.toLowerCase().trim();
+
+    // Look for elements containing the section name
+    const allElements = document.querySelectorAll('*');
+
+    for (const el of allElements) {
+      const text = el.textContent?.trim() || '';
+
+      // Check if this element contains ONLY the section name (or section + price)
+      if (text.length < 30) {
+        const textUpper = text.toUpperCase();
+
+        // Match exact section or section with price
+        if (textUpper === sectionUpper ||
+            textUpper.includes(sectionUpper) ||
+            text.match(new RegExp(`^${sectionName}\\s*$`, 'i')) ||
+            text.match(new RegExp(`^${sectionName}\\s*\\$`, 'i'))) {
+
+          const rect = el.getBoundingClientRect();
+
+          // Must be visible on screen
+          if (rect.width > 0 && rect.height > 0 && rect.top > 0 && rect.left > 0) {
+            console.log('[SeatGeek] Found section element:', text, 'at', rect.left, rect.top);
+            return {
+              element: el,
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              text: text
+            };
+          }
+        }
+      }
+    }
+
+    // Also check for data attributes
+    const sectionByAttr = document.querySelector(
+      `[data-section="${sectionName}"], [data-section="${sectionUpper}"], [data-section="${sectionLower}"]`
+    );
+
+    if (sectionByAttr) {
+      const rect = sectionByAttr.getBoundingClientRect();
+      return {
+        element: sectionByAttr,
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2,
+        text: sectionName
+      };
+    }
+
+    return null;
+  }
+
+  // Search sections one by one and find the cheapest ticket
+  async function searchSections(sectionList) {
+    console.log('[SeatGeek] Searching sections:', sectionList);
+    showNotification(`Searching ${sectionList.length} sections...`);
+
+    let cheapestTicket = null;
+    let cheapestSection = null;
+
+    for (let i = 0; i < sectionList.length; i++) {
+      const sectionName = sectionList[i].trim();
+      if (!sectionName) continue;
+
+      showNotification(`Checking section ${sectionName} (${i + 1}/${sectionList.length})...`);
+      console.log('[SeatGeek] Checking section:', sectionName);
+
+      // Find and click on this section
+      const section = findSectionOnMap(sectionName);
+
+      if (section) {
+        console.log('[SeatGeek] Found section', sectionName, 'at', section.x, section.y);
+
+        // Click on the section
+        await clickOnMapPoint(section.x, section.y);
+        await delay(1500); // Wait for listings to load
+
+        // Check the listings in sidebar
+        const listings = findListingCards();
+        console.log('[SeatGeek] Section', sectionName, 'has', listings.length, 'listings');
+
+        // Find cheapest in this section under max price
+        const affordable = listings.filter(l => l.price <= config.maxPrice);
+
+        if (affordable.length > 0) {
+          const cheapestInSection = affordable[0];
+          console.log('[SeatGeek] Section', sectionName, 'cheapest: $' + cheapestInSection.price);
+
+          if (!cheapestTicket || cheapestInSection.price < cheapestTicket.price) {
+            cheapestTicket = cheapestInSection;
+            cheapestSection = sectionName;
+          }
+        }
+      } else {
+        console.log('[SeatGeek] Section', sectionName, 'not found on map');
+      }
+
+      await delay(500);
+    }
+
+    return { ticket: cheapestTicket, section: cheapestSection };
+  }
+
   // Find price markers that Mapbox renders as DOM elements on top of the canvas
   function findMapboxPriceMarkers() {
     console.log('[SeatGeek] Looking for Mapbox price marker elements...');
@@ -577,9 +686,46 @@
   async function autoSelect() {
     console.log('[SeatGeek] ========== Starting Auto Select ==========');
     console.log('[SeatGeek] Max price:', config.maxPrice);
-    showNotification('Scanning ENTIRE stadium for lowest price...');
+    console.log('[SeatGeek] Sections:', config.sections);
 
     await delay(300);
+
+    // Check if sections are configured
+    if (config.sections && config.sections.trim()) {
+      // SECTION SEARCH MODE
+      const sectionList = config.sections.split(',').map(s => s.trim()).filter(s => s);
+      console.log('[SeatGeek] Section search mode:', sectionList);
+      showNotification(`Searching ${sectionList.length} sections...`);
+
+      const result = await searchSections(sectionList);
+
+      if (result.ticket) {
+        console.log('[SeatGeek] *** Best ticket: $' + result.ticket.price + ' in ' + result.section + ' ***');
+        showNotification(`Best: $${result.ticket.price} in ${result.section}! Selecting...`);
+
+        // Click back to that section and select the ticket
+        const section = findSectionOnMap(result.section);
+        if (section) {
+          await clickOnMapPoint(section.x, section.y);
+          await delay(1500);
+        }
+
+        // Now click the listing
+        const listings = findListingCards();
+        const affordable = listings.filter(l => l.price <= config.maxPrice);
+        if (affordable.length > 0) {
+          await clickMapElement(affordable[0]);
+          showNotification(`Selected $${affordable[0].price} in ${result.section}!`);
+        }
+        return;
+      } else {
+        showNotification(`No tickets under $${config.maxPrice} in specified sections`, true);
+        return;
+      }
+    }
+
+    // NO SECTIONS - scan entire map
+    showNotification('Scanning ENTIRE stadium for lowest price...');
 
     // STEP 0: Scan the entire map by moving mouse across it
     const mapPrices = await scanEntireMap();
@@ -718,5 +864,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v8.1 Ready - Press Alt+S to scan ENTIRE stadium map');
+  console.log('[SeatGeek] v9.0 Ready - Press Alt+S (configure sections in popup for targeted search)');
 })();
