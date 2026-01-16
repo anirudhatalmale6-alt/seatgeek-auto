@@ -1,19 +1,17 @@
 /**
  * SeatGeek Auto Select - Content Script
- * Press Alt+S to auto-select lowest price tickets with configured quantity
- * v2.0 - Now clicks on lowest price section on the stadium map first
+ * Press Alt+S to auto-select lowest price tickets
+ * v3.0 - Prioritizes MAP prices over sidebar, clicks on map sections first
  */
 
 (function() {
   console.log('[SeatGeek] Content script loaded on:', window.location.href);
 
-  // Default config
   let config = {
-    maxPrice: 999999,  // No limit by default
-    quantity: 6        // Default 6 tickets
+    maxPrice: 999999,
+    quantity: 6
   };
 
-  // Load config from storage
   chrome.storage.sync.get(['seatgeek_config'], (result) => {
     if (result.seatgeek_config) {
       config = result.seatgeek_config;
@@ -43,14 +41,13 @@
     `;
     notif.textContent = message;
     document.body.appendChild(notif);
-    setTimeout(() => notif.remove(), 4000);
+    setTimeout(() => notif.remove(), 5000);
   }
 
   function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
-  // Parse price from text (e.g. "$85" -> 85, "+$85" -> 85)
   function parsePrice(text) {
     if (!text) return Infinity;
     const cleanText = text.replace(/[+,]/g, '').trim();
@@ -58,24 +55,63 @@
     return match ? parseFloat(match[1]) : Infinity;
   }
 
-  // Find price markers on the stadium map
-  function findMapPriceMarkers() {
-    const markers = [];
+  // Find ALL price markers on the stadium map (SVG)
+  function findAllMapPrices() {
+    const prices = [];
 
-    // Look for SVG text elements or div overlays with prices on the map
-    // SeatGeek uses SVG for the map with price labels
+    // Get ALL SVG elements on the page
+    const svgElements = document.querySelectorAll('svg');
+    console.log('[SeatGeek] Found SVG elements:', svgElements.length);
 
-    // Method 1: Look for text elements with dollar amounts
-    const allText = document.querySelectorAll('text, [class*="price"], [class*="Price"], [class*="marker"], [class*="Marker"], [class*="label"], [class*="Label"]');
+    svgElements.forEach(svg => {
+      // Find all text elements that contain prices
+      const textElements = svg.querySelectorAll('text');
+      console.log('[SeatGeek] Found text elements in SVG:', textElements.length);
 
-    allText.forEach(el => {
+      textElements.forEach(textEl => {
+        const text = textEl.textContent.trim();
+
+        // Match price patterns: $61, +$94, $130, etc.
+        if (text.match(/^\+?\$\d+$/)) {
+          const price = parsePrice(text);
+
+          if (price > 0 && price < 10000) {
+            // Find the clickable parent group
+            let clickableParent = textEl.closest('g');
+
+            // Walk up to find a group that has event handlers or is clickable
+            let parent = textEl.parentElement;
+            while (parent && parent !== svg) {
+              if (parent.tagName === 'g' || parent.hasAttribute('data-section') ||
+                  parent.hasAttribute('data-id') || parent.classList.length > 0) {
+                clickableParent = parent;
+              }
+              parent = parent.parentElement;
+            }
+
+            prices.push({
+              element: clickableParent || textEl,
+              textElement: textEl,
+              price: price,
+              text: text
+            });
+
+            console.log('[SeatGeek] Found map price:', text, '- Element:', clickableParent?.tagName || textEl.tagName);
+          }
+        }
+      });
+    });
+
+    // Also look for price markers outside SVG (some sites use div overlays)
+    const priceOverlays = document.querySelectorAll('[class*="price-marker"], [class*="PriceMarker"], [class*="section-price"]');
+    priceOverlays.forEach(el => {
       const text = el.textContent.trim();
-      // Match prices like "$61", "+$94", "$130"
       if (text.match(/^\+?\$\d+$/)) {
         const price = parsePrice(text);
-        if (price > 0 && price < Infinity) {
-          markers.push({
+        if (price > 0 && price < 10000) {
+          prices.push({
             element: el,
+            textElement: el,
             price: price,
             text: text
           });
@@ -83,265 +119,166 @@
       }
     });
 
-    // Method 2: Look for clickable elements in the map area containing prices
-    const mapContainer = document.querySelector('[class*="map"], [class*="Map"], [class*="venue"], [class*="Venue"], svg');
-    if (mapContainer) {
-      const clickables = mapContainer.querySelectorAll('[role="button"], [tabindex], g[class], path[class], rect[class], circle[class]');
-      clickables.forEach(el => {
-        // Check for price in this element or nearby text
-        const nearbyText = el.querySelector('text') || el.closest('g')?.querySelector('text');
-        if (nearbyText) {
-          const text = nearbyText.textContent.trim();
-          if (text.match(/^\+?\$\d+$/)) {
-            const price = parsePrice(text);
-            if (price > 0 && price < Infinity && !markers.find(m => m.element === el)) {
-              markers.push({
-                element: el,
-                price: price,
-                text: text
-              });
-            }
-          }
-        }
-      });
-    }
-
-    // Method 3: Look for any element that looks like a price tag on the map
-    const priceLabels = document.querySelectorAll('[class*="section"] [class*="price"], [class*="seat"] [class*="price"], [data-price], [aria-label*="$"]');
-    priceLabels.forEach(el => {
-      const text = el.textContent || el.getAttribute('aria-label') || el.getAttribute('data-price') || '';
-      const price = parsePrice(text);
-      if (price > 0 && price < Infinity && !markers.find(m => m.element === el)) {
-        markers.push({
-          element: el,
-          price: price,
-          text: text
-        });
-      }
-    });
-
     // Sort by price (lowest first)
-    markers.sort((a, b) => a.price - b.price);
+    prices.sort((a, b) => a.price - b.price);
 
-    console.log('[SeatGeek] Found map markers:', markers.length);
-    markers.slice(0, 10).forEach((m, i) => {
-      console.log(`[SeatGeek] Map #${i + 1}: $${m.price} - "${m.text}"`);
+    console.log('[SeatGeek] Total map prices found:', prices.length);
+    prices.slice(0, 10).forEach((p, i) => {
+      console.log(`[SeatGeek] #${i + 1}: $${p.price}`);
     });
 
-    return markers;
+    return prices;
   }
 
-  // Find ticket listings in the sidebar
-  function findTicketListings() {
-    const listings = [];
+  // Click on a map element with proper event simulation
+  async function clickMapElement(item) {
+    console.log('[SeatGeek] Attempting to click on $' + item.price);
 
-    // Look for listing items in the left panel
-    const listItems = document.querySelectorAll('[class*="listing"], [class*="Listing"], [class*="ticket-row"], [class*="TicketRow"], [data-testid*="listing"]');
+    const element = item.element;
+    const textElement = item.textElement;
 
-    listItems.forEach(el => {
-      const priceEl = el.querySelector('[class*="price"], [class*="Price"]');
-      if (priceEl) {
-        const price = parsePrice(priceEl.textContent);
-        if (price > 0 && price < Infinity) {
-          listings.push({
-            element: el,
-            price: price,
-            priceText: priceEl.textContent
-          });
-        }
-      }
-    });
+    // Get the bounding rect to simulate mouse position
+    const rect = (textElement || element).getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
 
-    // Also look for any clickable rows with prices
-    const rows = document.querySelectorAll('[role="button"], [class*="row"], [class*="Row"], [class*="card"], [class*="Card"]');
-    rows.forEach(row => {
-      const priceEl = row.querySelector('[class*="price"], [class*="Price"]');
-      if (priceEl) {
-        const price = parsePrice(priceEl.textContent);
-        if (price > 0 && price < Infinity && !listings.find(l => l.element === row)) {
-          // Make sure it's not a map element
-          if (!row.closest('svg') && !row.closest('[class*="map"]')) {
-            listings.push({
-              element: row,
-              price: price,
-              priceText: priceEl.textContent
-            });
-          }
-        }
-      }
-    });
+    console.log('[SeatGeek] Click position:', centerX, centerY);
 
-    // Sort by price
-    listings.sort((a, b) => a.price - b.price);
+    // Try multiple approaches to trigger the click
 
-    console.log('[SeatGeek] Found sidebar listings:', listings.length);
-    listings.slice(0, 5).forEach((l, i) => {
-      console.log(`[SeatGeek] Listing #${i + 1}: $${l.price}`);
-    });
+    // Approach 1: Direct click on element
+    element.click();
 
-    return listings;
-  }
-
-  // Click on a map section by price
-  async function clickMapSection(targetPrice) {
-    console.log('[SeatGeek] Looking for section with price $' + targetPrice + ' on map...');
-
-    // Find all clickable elements in the SVG map
-    const svg = document.querySelector('svg');
-    if (!svg) {
-      console.log('[SeatGeek] No SVG map found');
-      return false;
+    // Approach 2: Dispatch mouse events with coordinates
+    const mouseEvents = ['mouseenter', 'mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'];
+    for (const eventType of mouseEvents) {
+      const event = new MouseEvent(eventType, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: centerX,
+        clientY: centerY,
+        screenX: centerX,
+        screenY: centerY
+      });
+      element.dispatchEvent(event);
+      await delay(50);
     }
 
-    // Look for text elements with the target price
-    const textElements = svg.querySelectorAll('text');
-    for (const text of textElements) {
-      const content = text.textContent.trim();
-      const price = parsePrice(content);
-
-      if (price === targetPrice || Math.abs(price - targetPrice) < 1) {
-        console.log('[SeatGeek] Found price label:', content);
-
-        // Find the parent group that's clickable
-        let clickTarget = text.closest('g[class]') || text.closest('[role="button"]') || text.parentElement;
-
-        // Try clicking
-        if (clickTarget) {
-          console.log('[SeatGeek] Clicking on map section...');
-
-          // Dispatch multiple event types to ensure click is registered
-          ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click'].forEach(eventType => {
-            clickTarget.dispatchEvent(new MouseEvent(eventType, {
-              bubbles: true,
-              cancelable: true,
-              view: window
-            }));
-          });
-
-          return true;
-        }
+    // Approach 3: Click on text element too
+    if (textElement && textElement !== element) {
+      textElement.click();
+      for (const eventType of mouseEvents) {
+        const event = new MouseEvent(eventType, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: centerX,
+          clientY: centerY
+        });
+        textElement.dispatchEvent(event);
       }
     }
 
-    // Alternative: Look for sections by area/path elements
-    const sections = svg.querySelectorAll('g, path, rect, polygon');
-    for (const section of sections) {
-      const ariaLabel = section.getAttribute('aria-label') || '';
-      const dataPrice = section.getAttribute('data-price') || '';
-
-      if (ariaLabel.includes('$' + targetPrice) || dataPrice.includes(targetPrice)) {
-        console.log('[SeatGeek] Found section by aria-label');
-        section.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-        return true;
+    // Approach 4: Try to find and click on any sibling path/rect elements
+    const parent = element.parentElement;
+    if (parent) {
+      const siblings = parent.querySelectorAll('path, rect, polygon, circle');
+      for (const sibling of siblings) {
+        sibling.click();
+        sibling.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
       }
     }
 
-    return false;
+    // Approach 5: Simulate pointer events (for modern touch/pointer support)
+    try {
+      element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
+      await delay(50);
+      element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
+    } catch (e) {
+      console.log('[SeatGeek] PointerEvent not supported');
+    }
+
+    // Highlight the element
+    try {
+      element.style.outline = '3px solid #28a745';
+      element.style.outlineOffset = '2px';
+    } catch (e) {}
+
+    return true;
   }
 
   // Main auto-select function
   async function autoSelect() {
-    console.log('[SeatGeek] Starting auto-select...');
-    console.log('[SeatGeek] Config:', config);
-    showNotification('Scanning for lowest price...');
+    console.log('[SeatGeek] ========== Starting Auto Select ==========');
+    console.log('[SeatGeek] Max price:', config.maxPrice);
+    showNotification('Scanning stadium map for lowest prices...');
 
     await delay(500);
 
-    // Step 1: Find prices on the map
-    const mapMarkers = findMapPriceMarkers();
+    // STEP 1: Find ALL prices on the map
+    const mapPrices = findAllMapPrices();
 
-    // Step 2: Find listings in sidebar
-    const listings = findTicketListings();
-
-    // Combine all prices found
-    const allPrices = [...mapMarkers, ...listings];
-    allPrices.sort((a, b) => a.price - b.price);
-
-    if (allPrices.length === 0) {
-      showNotification('No prices found on page', true);
+    if (mapPrices.length === 0) {
+      showNotification('No prices found on map!', true);
       return;
     }
 
-    // Filter by max price
-    const affordable = allPrices.filter(p => p.price <= config.maxPrice);
+    // STEP 2: Filter by max price
+    const affordable = mapPrices.filter(p => p.price <= config.maxPrice);
 
     if (affordable.length === 0) {
-      showNotification(`No tickets under $${config.maxPrice}. Lowest: $${allPrices[0].price}`, true);
+      const lowestFound = mapPrices[0].price;
+      showNotification(`No tickets under $${config.maxPrice}. Lowest found: $${lowestFound}`, true);
       return;
     }
 
-    // Get the cheapest option
+    // STEP 3: Get the cheapest
     const cheapest = affordable[0];
-    console.log('[SeatGeek] Cheapest found: $' + cheapest.price);
-    showNotification(`Found $${cheapest.price} - Clicking...`);
+    console.log('[SeatGeek] *** Cheapest ticket: $' + cheapest.price + ' ***');
+    showNotification(`Found lowest: $${cheapest.price} - Clicking...`);
 
     await delay(300);
 
-    // Try to click on the element
-    if (cheapest.element) {
-      // Scroll into view if in sidebar
-      if (!cheapest.element.closest('svg')) {
-        cheapest.element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        await delay(300);
-      }
+    // STEP 4: Click on the map section
+    await clickMapElement(cheapest);
 
-      // Highlight
-      cheapest.element.style.outline = '3px solid #28a745';
-      cheapest.element.style.outlineOffset = '2px';
+    showNotification(`Clicked on $${cheapest.price} section!`);
 
-      // Click
-      cheapest.element.click();
+    // STEP 5: Wait for tickets to load and look for checkout
+    await delay(2000);
 
-      // Also try dispatching events
-      ['mouseenter', 'mouseover', 'mousedown', 'mouseup', 'click'].forEach(eventType => {
-        cheapest.element.dispatchEvent(new MouseEvent(eventType, {
-          bubbles: true,
-          cancelable: true,
-          view: window
-        }));
-      });
-
-      console.log('[SeatGeek] Clicked on cheapest option');
-      showNotification(`Selected: $${cheapest.price}!`);
-
-      // Wait and look for a "Buy" or "Get Tickets" button
-      await delay(1500);
-
-      // Try to click buy button if it appears
-      const buyButtons = document.querySelectorAll('button, [role="button"]');
-      for (const btn of buyButtons) {
-        const text = btn.textContent.toLowerCase();
-        if (text.includes('buy') || text.includes('get tickets') || text.includes('checkout') || text.includes('continue')) {
-          console.log('[SeatGeek] Found buy button:', btn.textContent);
-          // Don't auto-click buy, just highlight it
-          btn.style.outline = '3px solid #ff9800';
-          break;
-        }
+    // Look for any buy/checkout buttons
+    const buttons = document.querySelectorAll('button, [role="button"], a');
+    for (const btn of buttons) {
+      const text = (btn.textContent || '').toLowerCase();
+      if (text.includes('buy') || text.includes('checkout') || text.includes('get ticket') || text.includes('continue')) {
+        btn.style.outline = '3px solid #ff9800';
+        btn.style.outlineOffset = '2px';
+        console.log('[SeatGeek] Buy button found:', btn.textContent.trim());
+        break;
       }
     }
   }
 
-  // Listen for messages from background script
+  // Listen for messages
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-    if (message.action === 'autoSelect') {
-      autoSelect();
-    }
+    if (message.action === 'autoSelect') autoSelect();
     if (message.action === 'updateConfig') {
       config = message.config;
       console.log('[SeatGeek] Config updated:', config);
     }
   });
 
-  // Listen for Alt+S keypress directly
+  // Alt+S keypress
   document.addEventListener('keydown', (e) => {
     if (e.altKey && e.code === 'KeyS') {
       e.preventDefault();
-      console.log('[SeatGeek] Alt+S detected');
       autoSelect();
     }
   });
 
-  // Create overlay button
+  // Overlay button
   function createOverlay() {
     if (document.getElementById('seatgeek-overlay')) return;
 
@@ -374,12 +311,10 @@
       <button class="btn" id="seatgeek-auto-btn">🎫 AUTO SELECT (Alt+S)</button>
     `;
     document.body.appendChild(overlay);
-
     document.getElementById('seatgeek-auto-btn').addEventListener('click', autoSelect);
   }
 
-  // Add overlay after page loads
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v2.0 Ready! Press Alt+S to auto-select lowest price tickets.');
+  console.log('[SeatGeek] v3.0 Ready - Press Alt+S to find lowest price on MAP');
 })();
