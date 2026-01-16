@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SeatGeek Auto Select",
-  "version": "8.0",
+  "version": "8.1",
   "description": "Alt+S = Auto-select lowest price tickets",
   "permissions": ["activeTab", "scripting", "storage"],
   "host_permissions": ["https://seatgeek.com/*", "https://*.seatgeek.com/*"],

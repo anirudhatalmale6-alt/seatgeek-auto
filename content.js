@@ -351,12 +351,102 @@
     return allTickets;
   }
 
+  // Find price markers that Mapbox renders as DOM elements on top of the canvas
+  function findMapboxPriceMarkers() {
+    console.log('[SeatGeek] Looking for Mapbox price marker elements...');
+    const markers = [];
+
+    // Mapbox creates markers as DOM elements overlaid on the canvas
+    // Look for mapboxgl-marker elements and any elements with $ prices near the map
+    const mapContainer = document.querySelector('[class*="mapboxgl"], [class*="MapViewport"], [class*="VenueMap"]');
+    if (!mapContainer) {
+      console.log('[SeatGeek] Map container not found');
+      return markers;
+    }
+
+    const mapRect = mapContainer.getBoundingClientRect();
+    console.log('[SeatGeek] Map container found:', mapRect.width, 'x', mapRect.height);
+
+    // Find all elements that could be price markers
+    const potentialMarkers = document.querySelectorAll(
+      '.mapboxgl-marker, [class*="marker"], [class*="Marker"], ' +
+      '[class*="price-tag"], [class*="PriceTag"], [class*="price-label"], ' +
+      '[class*="section-label"], [class*="SectionLabel"], ' +
+      'div[style*="transform"], div[style*="translate"]'
+    );
+
+    console.log('[SeatGeek] Potential marker elements:', potentialMarkers.length);
+
+    potentialMarkers.forEach(el => {
+      const rect = el.getBoundingClientRect();
+      // Check if element is within map bounds
+      if (rect.left >= mapRect.left && rect.right <= mapRect.right &&
+          rect.top >= mapRect.top && rect.bottom <= mapRect.bottom) {
+
+        const text = el.textContent?.trim() || '';
+        const priceMatch = text.match(/\$(\d+)/);
+
+        if (priceMatch) {
+          const price = parseInt(priceMatch[1]);
+          markers.push({
+            element: el,
+            price: price,
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            text: text
+          });
+          console.log('[SeatGeek] Found map marker: $' + price, 'at', rect.left, rect.top);
+        }
+      }
+    });
+
+    // Also scan ALL small elements on page for prices (the markers might have unusual classes)
+    document.querySelectorAll('div, span').forEach(el => {
+      const text = el.textContent?.trim() || '';
+      // Must be a short text that looks like a price
+      if (text.length > 0 && text.length < 15 && text.match(/^\+?\$\d+\+?$/)) {
+        const rect = el.getBoundingClientRect();
+        // Must be within map area
+        if (rect.left >= mapRect.left - 50 && rect.right <= mapRect.right + 50 &&
+            rect.top >= mapRect.top - 50 && rect.bottom <= mapRect.bottom + 50 &&
+            rect.width > 0 && rect.height > 0) {
+
+          const price = parseInt(text.replace(/[^0-9]/g, ''));
+          const key = `${price}-${Math.round(rect.left)}`;
+
+          if (!markers.find(m => m.key === key)) {
+            markers.push({
+              element: el,
+              price: price,
+              x: rect.left + rect.width / 2,
+              y: rect.top + rect.height / 2,
+              text: text,
+              key: key
+            });
+            console.log('[SeatGeek] Found price element on map: $' + price);
+          }
+        }
+      }
+    });
+
+    markers.sort((a, b) => a.price - b.price);
+    console.log('[SeatGeek] Total map markers found:', markers.length);
+    return markers;
+  }
+
   // Click on different parts of the map to load all sections
   async function scanEntireMap() {
     console.log('[SeatGeek] Scanning entire stadium map...');
     showNotification('Scanning stadium map for all prices...');
 
-    // Find the map canvas
+    // First, look for existing price markers on the map
+    const existingMarkers = findMapboxPriceMarkers();
+    if (existingMarkers.length > 0) {
+      console.log('[SeatGeek] Found', existingMarkers.length, 'price markers on map!');
+      return existingMarkers;
+    }
+
+    // Find the map canvas for mouse simulation
     const mapCanvas = document.querySelector('canvas.mapboxgl-canvas, canvas[class*="mapbox"]');
     if (!mapCanvas) {
       console.log('[SeatGeek] Map canvas not found');
@@ -384,7 +474,8 @@
           clientX: x, clientY: y
         });
         mapCanvas.dispatchEvent(moveEvent);
-        await delay(80);
+        document.dispatchEvent(moveEvent); // Also dispatch to document
+        await delay(100);
 
         // Check for any price popup that appeared
         const popups = document.querySelectorAll('[class*="popup"], [class*="tooltip"], [class*="Popup"], [class*="Tooltip"], [class*="marker"], [class*="Marker"], [class*="price"], [class*="Price"]');
@@ -397,6 +488,14 @@
               allPricesFound.set(price, { price, x, y, text: text.substring(0, 100) });
               console.log('[SeatGeek] Map scan found: $' + price + ' at grid(' + col + ',' + row + ')');
             }
+          }
+        });
+
+        // Also check for newly appeared markers
+        const newMarkers = findMapboxPriceMarkers();
+        newMarkers.forEach(m => {
+          if (!allPricesFound.has(m.price)) {
+            allPricesFound.set(m.price, m);
           }
         });
       }
@@ -619,5 +718,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v8.0 Ready - Press Alt+S to scan ENTIRE stadium map');
+  console.log('[SeatGeek] v8.1 Ready - Press Alt+S to scan ENTIRE stadium map');
 })();
