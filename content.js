@@ -177,80 +177,100 @@
     return unique;
   }
 
-  // Click on a map element with proper event simulation
+  // Click on a listing element - try multiple strategies
   async function clickMapElement(item) {
     console.log('[SeatGeek] Attempting to click on $' + item.price);
 
     const element = item.element;
-    const textElement = item.textElement;
-
-    // Get the bounding rect to simulate mouse position
-    const rect = (textElement || element).getBoundingClientRect();
+    const rect = item.rect || element.getBoundingClientRect();
     const centerX = rect.left + rect.width / 2;
     const centerY = rect.top + rect.height / 2;
 
+    console.log('[SeatGeek] Element:', element.tagName, element.className);
     console.log('[SeatGeek] Click position:', centerX, centerY);
 
-    // Try multiple approaches to trigger the click
+    // Highlight the element first so user can see what we're clicking
+    try {
+      element.style.outline = '3px solid #28a745';
+      element.style.outlineOffset = '2px';
+    } catch (e) {}
 
-    // Approach 1: Direct click on element
+    // Strategy 1: Scroll element into view and use native click
+    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    await delay(300);
+
+    // Strategy 2: Try clicking the element directly
     element.click();
+    console.log('[SeatGeek] Direct click done');
+    await delay(200);
 
-    // Approach 2: Dispatch mouse events with coordinates
-    const mouseEvents = ['mouseenter', 'mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'];
-    for (const eventType of mouseEvents) {
-      const event = new MouseEvent(eventType, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: centerX,
-        clientY: centerY,
-        screenX: centerX,
-        screenY: centerY
-      });
-      element.dispatchEvent(event);
-      await delay(50);
+    // Strategy 3: Find any clickable children (buttons, links, divs with click handlers)
+    const clickableChildren = element.querySelectorAll('button, a, [role="button"], [onclick]');
+    for (const child of clickableChildren) {
+      console.log('[SeatGeek] Clicking child:', child.tagName);
+      child.click();
+      await delay(100);
     }
 
-    // Approach 3: Click on text element too
-    if (textElement && textElement !== element) {
-      textElement.click();
-      for (const eventType of mouseEvents) {
-        const event = new MouseEvent(eventType, {
+    // Strategy 4: Walk up to find the actual clickable container
+    let parent = element;
+    for (let i = 0; i < 10 && parent; i++) {
+      const cursor = getComputedStyle(parent).cursor;
+      const role = parent.getAttribute('role');
+
+      if (cursor === 'pointer' || role === 'button' || parent.onclick) {
+        console.log('[SeatGeek] Found clickable parent:', parent.tagName, parent.className.substring(0, 50));
+        parent.click();
+
+        // Also dispatch mouse events
+        const mouseEvent = new MouseEvent('click', {
           bubbles: true,
           cancelable: true,
           view: window,
           clientX: centerX,
           clientY: centerY
         });
-        textElement.dispatchEvent(event);
+        parent.dispatchEvent(mouseEvent);
+        await delay(100);
       }
+      parent = parent.parentElement;
     }
 
-    // Approach 4: Try to find and click on any sibling path/rect elements
-    const parent = element.parentElement;
-    if (parent) {
-      const siblings = parent.querySelectorAll('path, rect, polygon, circle');
-      for (const sibling of siblings) {
-        sibling.click();
-        sibling.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
-      }
-    }
+    // Strategy 5: Simulate real mouse interaction at coordinates
+    const elemAtPoint = document.elementFromPoint(centerX, centerY);
+    if (elemAtPoint) {
+      console.log('[SeatGeek] Element at point:', elemAtPoint.tagName, elemAtPoint.className.substring(0, 50));
 
-    // Approach 5: Simulate pointer events (for modern touch/pointer support)
-    try {
-      element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
+      // Full mouse event sequence
+      ['mouseenter', 'mouseover', 'mousemove', 'mousedown'].forEach(type => {
+        elemAtPoint.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, cancelable: true, view: window,
+          clientX: centerX, clientY: centerY
+        }));
+      });
+
       await delay(50);
-      element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: centerX, clientY: centerY }));
-    } catch (e) {
-      console.log('[SeatGeek] PointerEvent not supported');
-    }
 
-    // Highlight the element
-    try {
-      element.style.outline = '3px solid #28a745';
-      element.style.outlineOffset = '2px';
-    } catch (e) {}
+      ['mouseup', 'click'].forEach(type => {
+        elemAtPoint.dispatchEvent(new MouseEvent(type, {
+          bubbles: true, cancelable: true, view: window,
+          clientX: centerX, clientY: centerY
+        }));
+      });
+
+      // Try pointer events too
+      try {
+        elemAtPoint.dispatchEvent(new PointerEvent('pointerdown', {
+          bubbles: true, cancelable: true, pointerId: 1,
+          clientX: centerX, clientY: centerY
+        }));
+        await delay(50);
+        elemAtPoint.dispatchEvent(new PointerEvent('pointerup', {
+          bubbles: true, cancelable: true, pointerId: 1,
+          clientX: centerX, clientY: centerY
+        }));
+      } catch (e) {}
+    }
 
     return true;
   }
@@ -372,5 +392,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v6.0 Ready - Press Alt+S to auto-select lowest price listing');
+  console.log('[SeatGeek] v6.1 Ready - Press Alt+S to auto-select lowest price listing');
 })();
