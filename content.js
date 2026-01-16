@@ -351,6 +351,90 @@
     return allTickets;
   }
 
+  // Click on different parts of the map to load all sections
+  async function scanEntireMap() {
+    console.log('[SeatGeek] Scanning entire stadium map...');
+    showNotification('Scanning stadium map for all prices...');
+
+    // Find the map canvas
+    const mapCanvas = document.querySelector('canvas.mapboxgl-canvas, canvas[class*="mapbox"]');
+    if (!mapCanvas) {
+      console.log('[SeatGeek] Map canvas not found');
+      return [];
+    }
+
+    const rect = mapCanvas.getBoundingClientRect();
+    console.log('[SeatGeek] Map bounds:', rect.width, 'x', rect.height);
+
+    const allPricesFound = new Map(); // price -> section info
+
+    // Click on a grid of points across the map
+    const gridSize = 6; // 6x6 grid = 36 clicks
+    const stepX = rect.width / (gridSize + 1);
+    const stepY = rect.height / (gridSize + 1);
+
+    for (let row = 1; row <= gridSize; row++) {
+      for (let col = 1; col <= gridSize; col++) {
+        const x = rect.left + (col * stepX);
+        const y = rect.top + (row * stepY);
+
+        // Simulate mouse move to this position (triggers price popup)
+        const moveEvent = new MouseEvent('mousemove', {
+          bubbles: true, cancelable: true, view: window,
+          clientX: x, clientY: y
+        });
+        mapCanvas.dispatchEvent(moveEvent);
+        await delay(80);
+
+        // Check for any price popup that appeared
+        const popups = document.querySelectorAll('[class*="popup"], [class*="tooltip"], [class*="Popup"], [class*="Tooltip"], [class*="marker"], [class*="Marker"], [class*="price"], [class*="Price"]');
+        popups.forEach(popup => {
+          const text = popup.textContent || '';
+          const priceMatch = text.match(/\$(\d+)/);
+          if (priceMatch) {
+            const price = parseInt(priceMatch[1]);
+            if (!allPricesFound.has(price)) {
+              allPricesFound.set(price, { price, x, y, text: text.substring(0, 100) });
+              console.log('[SeatGeek] Map scan found: $' + price + ' at grid(' + col + ',' + row + ')');
+            }
+          }
+        });
+      }
+      // Update progress
+      showNotification(`Scanning map... Row ${row}/${gridSize}`);
+    }
+
+    // Convert to array and sort
+    const prices = Array.from(allPricesFound.values());
+    prices.sort((a, b) => a.price - b.price);
+
+    console.log('[SeatGeek] Map scan complete. Found', prices.length, 'unique prices');
+    if (prices.length > 0) {
+      console.log('[SeatGeek] Cheapest from map scan: $' + prices[0].price);
+    }
+    return prices;
+  }
+
+  // Click on a specific point on the map canvas
+  async function clickOnMapPoint(x, y) {
+    const mapCanvas = document.querySelector('canvas.mapboxgl-canvas, canvas[class*="mapbox"]');
+    if (!mapCanvas) return false;
+
+    console.log('[SeatGeek] Clicking map at:', x, y);
+
+    // Full mouse event sequence on canvas
+    const events = ['mouseenter', 'mouseover', 'mousemove', 'mousedown', 'mouseup', 'click'];
+    for (const type of events) {
+      mapCanvas.dispatchEvent(new MouseEvent(type, {
+        bubbles: true, cancelable: true, view: window,
+        clientX: x, clientY: y, button: 0
+      }));
+      await delay(30);
+    }
+
+    return true;
+  }
+
   // Try to sort listings by lowest price first
   async function sortByLowestPrice() {
     console.log('[SeatGeek] Looking for sort/filter options...');
@@ -394,34 +478,45 @@
   async function autoSelect() {
     console.log('[SeatGeek] ========== Starting Auto Select ==========');
     console.log('[SeatGeek] Max price:', config.maxPrice);
-    showNotification('Searching ALL tickets in stadium...');
+    showNotification('Scanning ENTIRE stadium for lowest price...');
 
-    await delay(500);
+    await delay(300);
 
-    // STEP 0: Try to find ALL ticket data from internal state
-    const internalTickets = findAllTicketData();
-    if (internalTickets.length > 0) {
-      // Sort by price and find cheapest under max
-      internalTickets.sort((a, b) => a.price - b.price);
-      const cheapestInternal = internalTickets.find(t => t.price <= config.maxPrice);
-      if (cheapestInternal) {
-        console.log('[SeatGeek] *** Found cheapest from internal data: $' + cheapestInternal.price + ' ***');
-        showNotification(`Found $${cheapestInternal.price} in ${cheapestInternal.section || 'stadium'}! Looking for it...`);
-        // Now we need to find this listing in the DOM or trigger loading it
+    // STEP 0: Scan the entire map by moving mouse across it
+    const mapPrices = await scanEntireMap();
+
+    if (mapPrices.length > 0) {
+      // Found prices by scanning the map!
+      const cheapestMap = mapPrices.find(p => p.price <= config.maxPrice);
+      if (cheapestMap) {
+        console.log('[SeatGeek] *** Found $' + cheapestMap.price + ' on map! ***');
+        showNotification(`Found $${cheapestMap.price} on map! Clicking...`);
+
+        // Click on this location on the map
+        await clickOnMapPoint(cheapestMap.x, cheapestMap.y);
+        await delay(1500);
+
+        // Now the sidebar should show this section's tickets
+        showNotification(`Clicked $${cheapestMap.price} section. Loading tickets...`);
+        await delay(1000);
+      } else {
+        const lowestOnMap = mapPrices[0].price;
+        showNotification(`No tickets under $${config.maxPrice} on map. Lowest: $${lowestOnMap}`, true);
+        return;
       }
     }
 
-    // STEP 0b: Try to sort by lowest price first
-    await sortByLowestPrice();
-    await delay(500);
-
-    // STEP 1: Find all listing cards in sidebar
-    // NOTE: Map prices are on canvas (Mapbox GL) - cannot be read from DOM
-    // We use the sidebar listings instead
+    // STEP 1: Find all listing cards in sidebar (should now have cheaper tickets)
     const listings = findListingCards();
 
     if (listings.length === 0) {
-      showNotification('No ticket listings found! Try scrolling the listing panel.', true);
+      // Try to find internal data as fallback
+      const internalTickets = findAllTicketData();
+      if (internalTickets.length > 0) {
+        internalTickets.sort((a, b) => a.price - b.price);
+        console.log('[SeatGeek] Found', internalTickets.length, 'tickets in internal data');
+      }
+      showNotification('No ticket listings found! Try clicking on the map first.', true);
       return;
     }
 
@@ -430,14 +525,14 @@
 
     if (affordable.length === 0) {
       const lowestFound = listings[0].price;
-      showNotification(`No tickets under $${config.maxPrice}. Lowest found: $${lowestFound}`, true);
+      showNotification(`No tickets under $${config.maxPrice}. Lowest in sidebar: $${lowestFound}`, true);
       return;
     }
 
     // STEP 3: Get the cheapest
     const cheapest = affordable[0];
-    console.log('[SeatGeek] *** Cheapest ticket: $' + cheapest.price + ' ***');
-    showNotification(`Found lowest: $${cheapest.price} - Clicking...`);
+    console.log('[SeatGeek] *** Cheapest ticket in sidebar: $' + cheapest.price + ' ***');
+    showNotification(`Found $${cheapest.price} - Clicking...`);
 
     await delay(300);
 
@@ -524,5 +619,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v7.0 Ready - Press Alt+S to search ALL tickets in stadium');
+  console.log('[SeatGeek] v8.0 Ready - Press Alt+S to scan ENTIRE stadium map');
 })();
