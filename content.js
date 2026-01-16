@@ -275,6 +275,82 @@
     return true;
   }
 
+  // Try to find ALL ticket data from SeatGeek's internal state
+  function findAllTicketData() {
+    console.log('[SeatGeek] Searching for internal ticket data...');
+    const allTickets = [];
+
+    // Method 1: Look for React/Redux state in window
+    try {
+      // Check for __NEXT_DATA__ (Next.js)
+      const nextData = document.getElementById('__NEXT_DATA__');
+      if (nextData) {
+        const data = JSON.parse(nextData.textContent);
+        console.log('[SeatGeek] Found __NEXT_DATA__');
+        // Search for listings in the data
+        const searchData = (obj, path = '') => {
+          if (!obj || typeof obj !== 'object') return;
+          if (Array.isArray(obj)) {
+            obj.forEach((item, i) => searchData(item, `${path}[${i}]`));
+          } else {
+            if (obj.price && obj.section) {
+              allTickets.push({ price: obj.price, section: obj.section, row: obj.row, data: obj });
+            }
+            if (obj.listings && Array.isArray(obj.listings)) {
+              obj.listings.forEach(l => {
+                if (l.price) allTickets.push({ price: l.price, section: l.section, row: l.row, data: l });
+              });
+            }
+            Object.keys(obj).forEach(key => searchData(obj[key], `${path}.${key}`));
+          }
+        };
+        searchData(data);
+      }
+    } catch (e) {
+      console.log('[SeatGeek] Error parsing __NEXT_DATA__:', e);
+    }
+
+    // Method 2: Look for window.__PRELOADED_STATE__ or similar
+    const stateKeys = ['__PRELOADED_STATE__', '__INITIAL_STATE__', '__APP_STATE__', 'INITIAL_DATA', '__data'];
+    for (const key of stateKeys) {
+      try {
+        if (window[key]) {
+          console.log('[SeatGeek] Found window.' + key);
+          const searchState = (obj) => {
+            if (!obj || typeof obj !== 'object') return;
+            if (obj.price && typeof obj.price === 'number') {
+              allTickets.push({ price: obj.price, section: obj.section, data: obj });
+            }
+            if (Array.isArray(obj)) {
+              obj.forEach(searchState);
+            } else {
+              Object.values(obj).forEach(searchState);
+            }
+          };
+          searchState(window[key]);
+        }
+      } catch (e) {}
+    }
+
+    // Method 3: Look for script tags with JSON data
+    document.querySelectorAll('script[type="application/json"], script[type="application/ld+json"]').forEach(script => {
+      try {
+        const data = JSON.parse(script.textContent);
+        if (data.offers || data.listings) {
+          const items = data.offers || data.listings;
+          if (Array.isArray(items)) {
+            items.forEach(item => {
+              if (item.price) allTickets.push({ price: parseFloat(item.price), data: item });
+            });
+          }
+        }
+      } catch (e) {}
+    });
+
+    console.log('[SeatGeek] Found', allTickets.length, 'tickets in internal data');
+    return allTickets;
+  }
+
   // Try to sort listings by lowest price first
   async function sortByLowestPrice() {
     console.log('[SeatGeek] Looking for sort/filter options...');
@@ -318,11 +394,24 @@
   async function autoSelect() {
     console.log('[SeatGeek] ========== Starting Auto Select ==========');
     console.log('[SeatGeek] Max price:', config.maxPrice);
-    showNotification('Looking for lowest price tickets...');
+    showNotification('Searching ALL tickets in stadium...');
 
     await delay(500);
 
-    // STEP 0: Try to sort by lowest price first
+    // STEP 0: Try to find ALL ticket data from internal state
+    const internalTickets = findAllTicketData();
+    if (internalTickets.length > 0) {
+      // Sort by price and find cheapest under max
+      internalTickets.sort((a, b) => a.price - b.price);
+      const cheapestInternal = internalTickets.find(t => t.price <= config.maxPrice);
+      if (cheapestInternal) {
+        console.log('[SeatGeek] *** Found cheapest from internal data: $' + cheapestInternal.price + ' ***');
+        showNotification(`Found $${cheapestInternal.price} in ${cheapestInternal.section || 'stadium'}! Looking for it...`);
+        // Now we need to find this listing in the DOM or trigger loading it
+      }
+    }
+
+    // STEP 0b: Try to sort by lowest price first
     await sortByLowestPrice();
     await delay(500);
 
@@ -435,5 +524,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v6.2 Ready - Press Alt+S to auto-select lowest price listing');
+  console.log('[SeatGeek] v7.0 Ready - Press Alt+S to search ALL tickets in stadium');
 })();
