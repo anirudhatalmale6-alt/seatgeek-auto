@@ -275,12 +275,55 @@
     return true;
   }
 
+  // Try to sort listings by lowest price first
+  async function sortByLowestPrice() {
+    console.log('[SeatGeek] Looking for sort/filter options...');
+
+    // Look for sort dropdown or "Lowest Price" option
+    const sortButtons = document.querySelectorAll('button, [role="button"], select, [class*="sort"], [class*="Sort"], [class*="filter"], [class*="Filter"]');
+
+    for (const btn of sortButtons) {
+      const text = (btn.textContent || '').toLowerCase();
+      if (text.includes('sort') || text.includes('price') || text.includes('low')) {
+        console.log('[SeatGeek] Found sort element:', text.substring(0, 50));
+        btn.click();
+        await delay(500);
+
+        // Look for "Lowest Price" option in dropdown
+        const options = document.querySelectorAll('[role="option"], [role="menuitem"], li, option');
+        for (const opt of options) {
+          const optText = (opt.textContent || '').toLowerCase();
+          if (optText.includes('low') || optText.includes('price')) {
+            console.log('[SeatGeek] Clicking lowest price option:', optText);
+            opt.click();
+            await delay(1000);
+            return true;
+          }
+        }
+      }
+    }
+
+    // Alternative: scroll the listing panel to load more items
+    const listContainer = document.querySelector('[class*="ListingList"], [class*="listing-list"], [class*="scroll"]');
+    if (listContainer) {
+      console.log('[SeatGeek] Scrolling listing panel to load more...');
+      listContainer.scrollTop = 0; // Scroll to top first
+      await delay(500);
+    }
+
+    return false;
+  }
+
   // Main auto-select function
   async function autoSelect() {
     console.log('[SeatGeek] ========== Starting Auto Select ==========');
     console.log('[SeatGeek] Max price:', config.maxPrice);
-    showNotification('Scanning ticket listings...');
+    showNotification('Looking for lowest price tickets...');
 
+    await delay(500);
+
+    // STEP 0: Try to sort by lowest price first
+    await sortByLowestPrice();
     await delay(500);
 
     // STEP 1: Find all listing cards in sidebar
@@ -392,5 +435,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v6.1 Ready - Press Alt+S to auto-select lowest price listing');
+  console.log('[SeatGeek] v6.2 Ready - Press Alt+S to auto-select lowest price listing');
 })();
