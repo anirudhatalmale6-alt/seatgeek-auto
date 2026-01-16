@@ -1,7 +1,7 @@
 /**
  * SeatGeek Auto Select - Content Script
  * Press Alt+S to auto-select lowest price tickets
- * v4.0 - Comprehensive price detection across all element types
+ * v6.0 - Uses listing cards in sidebar (map uses canvas/WebGL, not DOM)
  */
 
 (function() {
@@ -55,217 +55,126 @@
     return match ? parseFloat(match[1]) : Infinity;
   }
 
-  // Find ALL price elements on the page - comprehensive search
-  function findAllMapPrices() {
-    const prices = [];
-    const seen = new Set();
+  // Find ticket listings in sidebar - these are clickable cards
+  function findListingCards() {
+    const listings = [];
+    console.log('[SeatGeek] Searching for listing cards...');
 
-    console.log('[SeatGeek] Starting comprehensive price scan...');
-
-    // Method 1: Scan ALL elements on page for price text
+    // Method 1: Find listing cards by common patterns
+    // SeatGeek uses cards with prices, section info, and row info
     const allElements = document.querySelectorAll('*');
-    console.log('[SeatGeek] Total elements on page:', allElements.length);
 
     allElements.forEach(el => {
-      // Skip script, style, and our own elements
-      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' ||
-          el.id === 'seatgeek-notification' || el.id === 'seatgeek-overlay') {
-        return;
-      }
+      // Look for clickable listing containers
+      const text = el.textContent || '';
+      const rect = el.getBoundingClientRect();
 
-      // Get direct text content (not from children)
-      const directText = Array.from(el.childNodes)
-        .filter(node => node.nodeType === Node.TEXT_NODE)
-        .map(node => node.textContent.trim())
-        .join('');
+      // Skip tiny or huge elements
+      if (rect.height < 50 || rect.height > 300 || rect.width < 100) return;
 
-      // Also check full text content for small elements
-      const fullText = el.textContent?.trim() || '';
+      // Check if this looks like a listing card (has price + section/row info)
+      const hasPrice = text.match(/\$\d+/);
+      const hasSection = text.match(/section|row|seat/i);
+      const isClickable = el.onclick || getComputedStyle(el).cursor === 'pointer' ||
+                          el.getAttribute('role') === 'button' ||
+                          el.tagName === 'BUTTON' || el.tagName === 'A';
 
-      // Check both direct text and full text (for small elements)
-      const textsToCheck = [directText];
-      if (fullText.length < 20) {
-        textsToCheck.push(fullText);
-      }
+      if (hasPrice && hasSection && rect.width > 0) {
+        // Extract price from text
+        const priceMatch = text.match(/\$(\d+)/);
+        if (priceMatch) {
+          const price = parseInt(priceMatch[1]);
 
-      textsToCheck.forEach(text => {
-        // Match price patterns: $61, +$94, $130, $61+, From $61, etc.
-        // More flexible regex to catch various formats
-        if (text && (text.match(/^\+?\$\d+\+?$|^\$\d+$/) ||
-                     text.match(/^From\s*\$\d+$/i) ||
-                     text.match(/^\$\d+\s*(each)?$/i))) {
-          const price = parsePrice(text);
-          const key = `${price}-${el.getBoundingClientRect().left}-${el.getBoundingClientRect().top}`;
-
-          if (price > 0 && price < 10000 && !seen.has(key)) {
-            seen.add(key);
-
-            // Find clickable parent
-            let clickable = el;
-            let parent = el.parentElement;
-            for (let i = 0; i < 10 && parent; i++) {
-              if (parent.onclick || parent.hasAttribute('data-section') ||
-                  parent.hasAttribute('data-id') || parent.hasAttribute('role') ||
-                  parent.style.cursor === 'pointer' ||
-                  parent.classList.toString().match(/section|seat|price|marker|clickable/i)) {
-                clickable = parent;
-              }
-              parent = parent.parentElement;
+          // Find the actual clickable parent
+          let clickable = el;
+          let parent = el;
+          for (let i = 0; i < 5; i++) {
+            if (!parent.parentElement) break;
+            parent = parent.parentElement;
+            if (parent.onclick || getComputedStyle(parent).cursor === 'pointer' ||
+                parent.getAttribute('role') === 'button' ||
+                parent.classList.toString().match(/listing|card|ticket|item/i)) {
+              clickable = parent;
             }
+          }
 
-            prices.push({
+          // Check if this is a unique listing (by position)
+          const key = `${Math.round(rect.top)}-${price}`;
+          const existing = listings.find(l => l.key === key);
+          if (!existing && price > 0 && price < 10000) {
+            listings.push({
               element: clickable,
-              textElement: el,
               price: price,
-              text: text
+              text: text.substring(0, 100),
+              key: key,
+              rect: rect
             });
-
-            console.log('[SeatGeek] Found price:', text, '- Tag:', el.tagName, '- Classes:', el.className);
-          }
-        }
-      });
-    });
-
-    // Method 1b: Find prices using more flexible patterns (for map markers)
-    const priceRegex = /\$(\d+)/g;
-    allElements.forEach(el => {
-      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') return;
-
-      // Check for small leaf elements that might contain prices
-      if (el.children.length === 0) {
-        const text = el.textContent?.trim() || '';
-        if (text.length <= 15 && text.includes('$')) {
-          const match = text.match(/\$(\d+)/);
-          if (match) {
-            const price = parseInt(match[1]);
-            const rect = el.getBoundingClientRect();
-            const key = `leaf-${price}-${Math.round(rect.left)}-${Math.round(rect.top)}`;
-
-            if (price > 0 && price < 10000 && !seen.has(key) && rect.width > 0) {
-              seen.add(key);
-
-              // Check if element is within map area (typically left half of screen)
-              const isInMapArea = rect.left < window.innerWidth * 0.7;
-
-              let clickable = el;
-              let parent = el.parentElement;
-              for (let i = 0; i < 10 && parent; i++) {
-                if (parent.onclick || parent.hasAttribute('data-section') ||
-                    getComputedStyle(parent).cursor === 'pointer') {
-                  clickable = parent;
-                }
-                parent = parent.parentElement;
-              }
-
-              prices.push({
-                element: clickable,
-                textElement: el,
-                price: price,
-                text: text,
-                isMapPrice: isInMapArea
-              });
-
-              console.log('[SeatGeek] Found leaf price:', text, '- InMap:', isInMapArea);
-            }
+            console.log('[SeatGeek] Found listing card: $' + price);
           }
         }
       }
     });
 
-    // Method 2: Search in SVG elements
-    const svgElements = document.querySelectorAll('svg');
-    console.log('[SeatGeek] Found SVG elements:', svgElements.length);
+    // Method 2: Look for specific SeatGeek listing patterns
+    // The screenshot shows "ClassicLayout__PriceWrapper" class
+    document.querySelectorAll('[class*="PriceWrapper"], [class*="Listing"], [class*="listing"]').forEach(el => {
+      const text = el.textContent || '';
+      const priceMatch = text.match(/\$(\d+)/);
+      if (priceMatch) {
+        const price = parseInt(priceMatch[1]);
+        const rect = el.getBoundingClientRect();
 
-    svgElements.forEach(svg => {
-      const textElements = svg.querySelectorAll('text, tspan');
-      textElements.forEach(textEl => {
-        const text = textEl.textContent?.trim();
-        if (text && text.match(/^\+?\$\d+\+?$/)) {
-          const price = parsePrice(text);
-          const key = `svg-${price}-${textEl.getBoundingClientRect().left}`;
-
-          if (price > 0 && price < 10000 && !seen.has(key)) {
-            seen.add(key);
-            let clickableParent = textEl.closest('g') || textEl;
-
-            prices.push({
-              element: clickableParent,
-              textElement: textEl,
-              price: price,
-              text: text
-            });
-
-            console.log('[SeatGeek] Found SVG price:', text);
+        // Find clickable parent (the actual card)
+        let card = el;
+        let parent = el;
+        for (let i = 0; i < 10; i++) {
+          if (!parent.parentElement) break;
+          parent = parent.parentElement;
+          if (parent.getAttribute('role') === 'button' ||
+              parent.tagName === 'BUTTON' ||
+              parent.classList.toString().match(/card|listing|item|row/i) ||
+              getComputedStyle(parent).cursor === 'pointer') {
+            card = parent;
           }
         }
-      });
-    });
 
-    // Method 3: Search in Shadow DOM if present
-    document.querySelectorAll('*').forEach(el => {
-      if (el.shadowRoot) {
-        console.log('[SeatGeek] Found shadow root in:', el.tagName);
-        el.shadowRoot.querySelectorAll('*').forEach(shadowEl => {
-          const text = shadowEl.textContent?.trim();
-          if (text && text.match(/^\+?\$\d+\+?$/) && text.length < 10) {
-            const price = parsePrice(text);
-            if (price > 0 && price < 10000) {
-              prices.push({
-                element: shadowEl,
-                textElement: shadowEl,
-                price: price,
-                text: text
-              });
-              console.log('[SeatGeek] Found shadow DOM price:', text);
-            }
-          }
-        });
-      }
-    });
-
-    // Method 4: Search in iframes (same origin only)
-    document.querySelectorAll('iframe').forEach(iframe => {
-      try {
-        const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
-        if (iframeDoc) {
-          console.log('[SeatGeek] Scanning iframe...');
-          iframeDoc.querySelectorAll('*').forEach(el => {
-            const text = el.textContent?.trim();
-            if (text && text.match(/^\+?\$\d+\+?$/) && text.length < 10) {
-              const price = parsePrice(text);
-              if (price > 0 && price < 10000) {
-                prices.push({
-                  element: el,
-                  textElement: el,
-                  price: price,
-                  text: text,
-                  inIframe: true
-                });
-                console.log('[SeatGeek] Found iframe price:', text);
-              }
-            }
+        const key = `wrapper-${Math.round(rect.top)}-${price}`;
+        const existing = listings.find(l => l.key === key);
+        if (!existing && price > 0 && price < 10000 && rect.width > 0) {
+          listings.push({
+            element: card,
+            price: price,
+            text: text.substring(0, 100),
+            key: key,
+            rect: rect
           });
+          console.log('[SeatGeek] Found PriceWrapper listing: $' + price);
         }
-      } catch (e) {
-        console.log('[SeatGeek] Cannot access iframe (cross-origin)');
       }
     });
 
-    // Sort by price (lowest first), prioritizing map prices
-    prices.sort((a, b) => {
-      // Prioritize map prices over sidebar prices
-      if (a.isMapPrice && !b.isMapPrice) return -1;
-      if (!a.isMapPrice && b.isMapPrice) return 1;
-      return a.price - b.price;
+    // Sort by price
+    listings.sort((a, b) => a.price - b.price);
+
+    // Remove duplicates (same price at similar vertical position)
+    const unique = [];
+    listings.forEach(listing => {
+      const isDupe = unique.some(u =>
+        Math.abs(u.price - listing.price) === 0 &&
+        Math.abs(u.rect.top - listing.rect.top) < 20
+      );
+      if (!isDupe) {
+        unique.push(listing);
+      }
     });
 
-    console.log('[SeatGeek] ====== PRICE SCAN COMPLETE ======');
-    console.log('[SeatGeek] Total prices found:', prices.length);
-    prices.slice(0, 20).forEach((p, i) => {
-      console.log(`[SeatGeek] #${i + 1}: $${p.price} (${p.textElement.tagName}) - Map: ${p.isMapPrice || false}`);
+    console.log('[SeatGeek] ====== LISTING SCAN COMPLETE ======');
+    console.log('[SeatGeek] Unique listings found:', unique.length);
+    unique.slice(0, 10).forEach((l, i) => {
+      console.log(`[SeatGeek] #${i + 1}: $${l.price}`);
     });
 
-    return prices;
+    return unique;
   }
 
   // Click on a map element with proper event simulation
@@ -350,23 +259,25 @@
   async function autoSelect() {
     console.log('[SeatGeek] ========== Starting Auto Select ==========');
     console.log('[SeatGeek] Max price:', config.maxPrice);
-    showNotification('Scanning stadium map for lowest prices...');
+    showNotification('Scanning ticket listings...');
 
     await delay(500);
 
-    // STEP 1: Find ALL prices on the map
-    const mapPrices = findAllMapPrices();
+    // STEP 1: Find all listing cards in sidebar
+    // NOTE: Map prices are on canvas (Mapbox GL) - cannot be read from DOM
+    // We use the sidebar listings instead
+    const listings = findListingCards();
 
-    if (mapPrices.length === 0) {
-      showNotification('No prices found on map!', true);
+    if (listings.length === 0) {
+      showNotification('No ticket listings found! Try scrolling the listing panel.', true);
       return;
     }
 
     // STEP 2: Filter by max price
-    const affordable = mapPrices.filter(p => p.price <= config.maxPrice);
+    const affordable = listings.filter(l => l.price <= config.maxPrice);
 
     if (affordable.length === 0) {
-      const lowestFound = mapPrices[0].price;
+      const lowestFound = listings[0].price;
       showNotification(`No tickets under $${config.maxPrice}. Lowest found: $${lowestFound}`, true);
       return;
     }
@@ -378,22 +289,29 @@
 
     await delay(300);
 
-    // STEP 4: Click on the map section
+    // STEP 4: Click on the listing card
     await clickMapElement(cheapest);
 
-    showNotification(`Clicked on $${cheapest.price} section!`);
+    showNotification(`Selected $${cheapest.price} listing!`);
 
-    // STEP 5: Wait for tickets to load and look for checkout
+    // STEP 5: Wait for ticket details to load
     await delay(2000);
 
-    // Look for any buy/checkout buttons
+    // Look for Continue button and highlight it
     const buttons = document.querySelectorAll('button, [role="button"], a');
     for (const btn of buttons) {
       const text = (btn.textContent || '').toLowerCase();
-      if (text.includes('buy') || text.includes('checkout') || text.includes('get ticket') || text.includes('continue')) {
+      if (text.includes('continue') || text.includes('buy') || text.includes('checkout')) {
         btn.style.outline = '3px solid #ff9800';
         btn.style.outlineOffset = '2px';
-        console.log('[SeatGeek] Buy button found:', btn.textContent.trim());
+        console.log('[SeatGeek] Continue/Buy button found:', btn.textContent.trim());
+
+        // Auto-click Continue if found
+        if (text.includes('continue')) {
+          await delay(500);
+          btn.click();
+          showNotification('Clicked Continue!');
+        }
         break;
       }
     }
@@ -454,5 +372,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v5.0 Ready - Press Alt+S to find lowest price on MAP');
+  console.log('[SeatGeek] v6.0 Ready - Press Alt+S to auto-select lowest price listing');
 })();
