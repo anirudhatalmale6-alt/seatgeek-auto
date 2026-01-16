@@ -1,0 +1,28 @@
+{
+  "manifest_version": 3,
+  "name": "SeatGeek Auto Select",
+  "version": "1.0",
+  "description": "Alt+S = Auto-select lowest price tickets",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["https://seatgeek.com/*", "https://*.seatgeek.com/*"],
+  "action": {
+    "default_title": "SeatGeek Auto Select (Alt+S)",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://seatgeek.com/*", "https://*.seatgeek.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "auto-select": {
+      "suggested_key": {"default": "Alt+S"},
+      "description": "Auto-select lowest price tickets"
+    }
+  }
+}
