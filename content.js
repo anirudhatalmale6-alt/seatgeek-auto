@@ -1,7 +1,7 @@
 /**
  * SeatGeek Auto Select - Content Script
  * Press Alt+S to auto-select lowest price tickets
- * v3.0 - Prioritizes MAP prices over sidebar, clicks on map sections first
+ * v4.0 - Comprehensive price detection across all element types
  */
 
 (function() {
@@ -55,76 +55,160 @@
     return match ? parseFloat(match[1]) : Infinity;
   }
 
-  // Find ALL price markers on the stadium map (SVG)
+  // Find ALL price elements on the page - comprehensive search
   function findAllMapPrices() {
     const prices = [];
+    const seen = new Set();
 
-    // Get ALL SVG elements on the page
-    const svgElements = document.querySelectorAll('svg');
-    console.log('[SeatGeek] Found SVG elements:', svgElements.length);
+    console.log('[SeatGeek] Starting comprehensive price scan...');
 
-    svgElements.forEach(svg => {
-      // Find all text elements that contain prices
-      const textElements = svg.querySelectorAll('text');
-      console.log('[SeatGeek] Found text elements in SVG:', textElements.length);
+    // Method 1: Scan ALL elements on page for price text
+    const allElements = document.querySelectorAll('*');
+    console.log('[SeatGeek] Total elements on page:', allElements.length);
 
-      textElements.forEach(textEl => {
-        const text = textEl.textContent.trim();
+    allElements.forEach(el => {
+      // Skip script, style, and our own elements
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' ||
+          el.id === 'seatgeek-notification' || el.id === 'seatgeek-overlay') {
+        return;
+      }
 
-        // Match price patterns: $61, +$94, $130, etc.
-        if (text.match(/^\+?\$\d+$/)) {
+      // Get direct text content (not from children)
+      const directText = Array.from(el.childNodes)
+        .filter(node => node.nodeType === Node.TEXT_NODE)
+        .map(node => node.textContent.trim())
+        .join('');
+
+      // Also check full text content for small elements
+      const fullText = el.textContent?.trim() || '';
+
+      // Check both direct text and full text (for small elements)
+      const textsToCheck = [directText];
+      if (fullText.length < 20) {
+        textsToCheck.push(fullText);
+      }
+
+      textsToCheck.forEach(text => {
+        // Match price patterns: $61, +$94, $130, $61+, etc.
+        if (text && text.match(/^\+?\$\d+\+?$|^\$\d+$/)) {
           const price = parsePrice(text);
+          const key = `${price}-${el.getBoundingClientRect().left}-${el.getBoundingClientRect().top}`;
 
-          if (price > 0 && price < 10000) {
-            // Find the clickable parent group
-            let clickableParent = textEl.closest('g');
+          if (price > 0 && price < 10000 && !seen.has(key)) {
+            seen.add(key);
 
-            // Walk up to find a group that has event handlers or is clickable
-            let parent = textEl.parentElement;
-            while (parent && parent !== svg) {
-              if (parent.tagName === 'g' || parent.hasAttribute('data-section') ||
-                  parent.hasAttribute('data-id') || parent.classList.length > 0) {
-                clickableParent = parent;
+            // Find clickable parent
+            let clickable = el;
+            let parent = el.parentElement;
+            for (let i = 0; i < 10 && parent; i++) {
+              if (parent.onclick || parent.hasAttribute('data-section') ||
+                  parent.hasAttribute('data-id') || parent.hasAttribute('role') ||
+                  parent.style.cursor === 'pointer' ||
+                  parent.classList.toString().match(/section|seat|price|marker|clickable/i)) {
+                clickable = parent;
               }
               parent = parent.parentElement;
             }
 
             prices.push({
-              element: clickableParent || textEl,
-              textElement: textEl,
+              element: clickable,
+              textElement: el,
               price: price,
               text: text
             });
 
-            console.log('[SeatGeek] Found map price:', text, '- Element:', clickableParent?.tagName || textEl.tagName);
+            console.log('[SeatGeek] Found price:', text, '- Tag:', el.tagName, '- Classes:', el.className);
           }
         }
       });
     });
 
-    // Also look for price markers outside SVG (some sites use div overlays)
-    const priceOverlays = document.querySelectorAll('[class*="price-marker"], [class*="PriceMarker"], [class*="section-price"]');
-    priceOverlays.forEach(el => {
-      const text = el.textContent.trim();
-      if (text.match(/^\+?\$\d+$/)) {
-        const price = parsePrice(text);
-        if (price > 0 && price < 10000) {
-          prices.push({
-            element: el,
-            textElement: el,
-            price: price,
-            text: text
+    // Method 2: Search in SVG elements
+    const svgElements = document.querySelectorAll('svg');
+    console.log('[SeatGeek] Found SVG elements:', svgElements.length);
+
+    svgElements.forEach(svg => {
+      const textElements = svg.querySelectorAll('text, tspan');
+      textElements.forEach(textEl => {
+        const text = textEl.textContent?.trim();
+        if (text && text.match(/^\+?\$\d+\+?$/)) {
+          const price = parsePrice(text);
+          const key = `svg-${price}-${textEl.getBoundingClientRect().left}`;
+
+          if (price > 0 && price < 10000 && !seen.has(key)) {
+            seen.add(key);
+            let clickableParent = textEl.closest('g') || textEl;
+
+            prices.push({
+              element: clickableParent,
+              textElement: textEl,
+              price: price,
+              text: text
+            });
+
+            console.log('[SeatGeek] Found SVG price:', text);
+          }
+        }
+      });
+    });
+
+    // Method 3: Search in Shadow DOM if present
+    document.querySelectorAll('*').forEach(el => {
+      if (el.shadowRoot) {
+        console.log('[SeatGeek] Found shadow root in:', el.tagName);
+        el.shadowRoot.querySelectorAll('*').forEach(shadowEl => {
+          const text = shadowEl.textContent?.trim();
+          if (text && text.match(/^\+?\$\d+\+?$/) && text.length < 10) {
+            const price = parsePrice(text);
+            if (price > 0 && price < 10000) {
+              prices.push({
+                element: shadowEl,
+                textElement: shadowEl,
+                price: price,
+                text: text
+              });
+              console.log('[SeatGeek] Found shadow DOM price:', text);
+            }
+          }
+        });
+      }
+    });
+
+    // Method 4: Search in iframes (same origin only)
+    document.querySelectorAll('iframe').forEach(iframe => {
+      try {
+        const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (iframeDoc) {
+          console.log('[SeatGeek] Scanning iframe...');
+          iframeDoc.querySelectorAll('*').forEach(el => {
+            const text = el.textContent?.trim();
+            if (text && text.match(/^\+?\$\d+\+?$/) && text.length < 10) {
+              const price = parsePrice(text);
+              if (price > 0 && price < 10000) {
+                prices.push({
+                  element: el,
+                  textElement: el,
+                  price: price,
+                  text: text,
+                  inIframe: true
+                });
+                console.log('[SeatGeek] Found iframe price:', text);
+              }
+            }
           });
         }
+      } catch (e) {
+        console.log('[SeatGeek] Cannot access iframe (cross-origin)');
       }
     });
 
     // Sort by price (lowest first)
     prices.sort((a, b) => a.price - b.price);
 
-    console.log('[SeatGeek] Total map prices found:', prices.length);
-    prices.slice(0, 10).forEach((p, i) => {
-      console.log(`[SeatGeek] #${i + 1}: $${p.price}`);
+    console.log('[SeatGeek] ====== PRICE SCAN COMPLETE ======');
+    console.log('[SeatGeek] Total prices found:', prices.length);
+    prices.slice(0, 15).forEach((p, i) => {
+      console.log(`[SeatGeek] #${i + 1}: $${p.price} (${p.textElement.tagName})`);
     });
 
     return prices;
