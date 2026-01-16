@@ -89,8 +89,11 @@
       }
 
       textsToCheck.forEach(text => {
-        // Match price patterns: $61, +$94, $130, $61+, etc.
-        if (text && text.match(/^\+?\$\d+\+?$|^\$\d+$/)) {
+        // Match price patterns: $61, +$94, $130, $61+, From $61, etc.
+        // More flexible regex to catch various formats
+        if (text && (text.match(/^\+?\$\d+\+?$|^\$\d+$/) ||
+                     text.match(/^From\s*\$\d+$/i) ||
+                     text.match(/^\$\d+\s*(each)?$/i))) {
           const price = parsePrice(text);
           const key = `${price}-${el.getBoundingClientRect().left}-${el.getBoundingClientRect().top}`;
 
@@ -121,6 +124,52 @@
           }
         }
       });
+    });
+
+    // Method 1b: Find prices using more flexible patterns (for map markers)
+    const priceRegex = /\$(\d+)/g;
+    allElements.forEach(el => {
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') return;
+
+      // Check for small leaf elements that might contain prices
+      if (el.children.length === 0) {
+        const text = el.textContent?.trim() || '';
+        if (text.length <= 15 && text.includes('$')) {
+          const match = text.match(/\$(\d+)/);
+          if (match) {
+            const price = parseInt(match[1]);
+            const rect = el.getBoundingClientRect();
+            const key = `leaf-${price}-${Math.round(rect.left)}-${Math.round(rect.top)}`;
+
+            if (price > 0 && price < 10000 && !seen.has(key) && rect.width > 0) {
+              seen.add(key);
+
+              // Check if element is within map area (typically left half of screen)
+              const isInMapArea = rect.left < window.innerWidth * 0.7;
+
+              let clickable = el;
+              let parent = el.parentElement;
+              for (let i = 0; i < 10 && parent; i++) {
+                if (parent.onclick || parent.hasAttribute('data-section') ||
+                    getComputedStyle(parent).cursor === 'pointer') {
+                  clickable = parent;
+                }
+                parent = parent.parentElement;
+              }
+
+              prices.push({
+                element: clickable,
+                textElement: el,
+                price: price,
+                text: text,
+                isMapPrice: isInMapArea
+              });
+
+              console.log('[SeatGeek] Found leaf price:', text, '- InMap:', isInMapArea);
+            }
+          }
+        }
+      }
     });
 
     // Method 2: Search in SVG elements
@@ -202,13 +251,18 @@
       }
     });
 
-    // Sort by price (lowest first)
-    prices.sort((a, b) => a.price - b.price);
+    // Sort by price (lowest first), prioritizing map prices
+    prices.sort((a, b) => {
+      // Prioritize map prices over sidebar prices
+      if (a.isMapPrice && !b.isMapPrice) return -1;
+      if (!a.isMapPrice && b.isMapPrice) return 1;
+      return a.price - b.price;
+    });
 
     console.log('[SeatGeek] ====== PRICE SCAN COMPLETE ======');
     console.log('[SeatGeek] Total prices found:', prices.length);
-    prices.slice(0, 15).forEach((p, i) => {
-      console.log(`[SeatGeek] #${i + 1}: $${p.price} (${p.textElement.tagName})`);
+    prices.slice(0, 20).forEach((p, i) => {
+      console.log(`[SeatGeek] #${i + 1}: $${p.price} (${p.textElement.tagName}) - Map: ${p.isMapPrice || false}`);
     });
 
     return prices;
@@ -400,5 +454,5 @@
 
   setTimeout(createOverlay, 1500);
 
-  console.log('[SeatGeek] v3.0 Ready - Press Alt+S to find lowest price on MAP');
+  console.log('[SeatGeek] v5.0 Ready - Press Alt+S to find lowest price on MAP');
 })();
